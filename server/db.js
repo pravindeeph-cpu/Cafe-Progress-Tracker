@@ -14,6 +14,7 @@ const useSsl = /neon\.tech|supabase\.co|render\.com|sslmode=require/.test(proces
 export const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
   ssl: useSsl ? { rejectUnauthorized: false } : false,
+  connectionTimeoutMillis: 10000,
 });
 
 export async function initSchema() {

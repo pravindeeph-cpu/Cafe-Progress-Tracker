@@ -144,13 +144,13 @@ app.use((err, req, res, next) => {
 
 const PORT = process.env.PORT || 4000;
 
-seed()
-  .then(() => {
-    app.listen(PORT, () => {
-      console.log(`Cafe Launch Control Centre API listening on http://localhost:${PORT}`);
-    });
-  })
-  .catch((err) => {
-    console.error('Failed to initialize database:', err);
-    process.exit(1);
-  });
+// Bind the port immediately so the host's health check succeeds even if the
+// database is slow to respond (e.g. a free-tier Postgres waking from idle).
+// API requests will fail with a clear 500 until the database is ready.
+app.listen(PORT, () => {
+  console.log(`Cafe Launch Control Centre API listening on http://localhost:${PORT}`);
+});
+
+seed().catch((err) => {
+  console.error('Failed to initialize database:', err);
+});
