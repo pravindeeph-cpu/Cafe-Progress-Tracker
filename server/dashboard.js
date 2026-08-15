@@ -1,8 +1,8 @@
-import { db } from './db.js';
+import { pool } from './db.js';
 
-function getSetting(key, fallback = '') {
-  const row = db.prepare('SELECT value FROM settings WHERE key = ?').get(key);
-  return row ? row.value : fallback;
+async function getSetting(key, fallback = '') {
+  const result = await pool.query('SELECT value FROM settings WHERE key = $1', [key]);
+  return result.rows[0] ? result.rows[0].value : fallback;
 }
 
 function num(v, fallback = 0) {
@@ -31,9 +31,33 @@ function pct(done, total) {
   return Math.round((done / total) * 1000) / 10;
 }
 
-export function computeGatesWithStatus() {
-  const gates = db.prepare('SELECT * FROM gates ORDER BY sort_order').all();
-  const gateItems = db.prepare('SELECT * FROM gate_items').all();
+function round2(v) {
+  return Math.round(v * 100) / 100;
+}
+
+function today() {
+  const d = new Date();
+  d.setHours(0, 0, 0, 0);
+  return d;
+}
+
+function isOverdue(deadline, status) {
+  if (!deadline || status === 'Complete') return false;
+  const d = new Date(deadline + 'T00:00:00');
+  if (Number.isNaN(d.getTime())) return false;
+  return d.getTime() < today().getTime();
+}
+
+async function all(table) {
+  const result = await pool.query(`SELECT * FROM ${table}`);
+  return result.rows;
+}
+
+export async function computeGatesWithStatus() {
+  const gateResult = await pool.query('SELECT * FROM gates ORDER BY sort_order');
+  const itemResult = await pool.query('SELECT * FROM gate_items ORDER BY id');
+  const gates = gateResult.rows;
+  const gateItems = itemResult.rows;
   return gates.map((g) => {
     const items = gateItems.filter((i) => i.gate_id === g.id);
     const total = items.length;
@@ -50,8 +74,8 @@ export function computeGatesWithStatus() {
   });
 }
 
-export function computeFinancialSummary() {
-  const startupCosts = db.prepare('SELECT * FROM startup_costs').all();
+export async function computeFinancialSummary() {
+  const startupCosts = await all('startup_costs');
   const totalEstimated = startupCosts.reduce((s, r) => s + num(r.estimated_cost), 0);
   const totalActual = startupCosts.reduce((s, r) => s + num(r.actual_cost), 0);
   const byCategory = {};
@@ -61,12 +85,13 @@ export function computeFinancialSummary() {
     byCategory[r.category].actual += num(r.actual_cost);
   }
 
-  const forecast = db.prepare('SELECT * FROM monthly_forecast ORDER BY month_index').all();
-  const monthlyFixedCostsSetting = num(getSetting('monthly_fixed_costs'));
-  const avgMarginPctSetting = num(getSetting('avg_contribution_margin_pct'));
+  const forecastResult = await pool.query('SELECT * FROM monthly_forecast ORDER BY month_index');
+  const forecast = forecastResult.rows;
+  const monthlyFixedCostsSetting = num(await getSetting('monthly_fixed_costs'));
+  const avgMarginPctSetting = num(await getSetting('avg_contribution_margin_pct'));
 
-  const menuItems = db.prepare('SELECT * FROM menu_items').all();
-  const ingredients = db.prepare('SELECT * FROM recipe_ingredients').all();
+  const menuItems = await all('menu_items');
+  const ingredients = await all('recipe_ingredients');
   const menuWithCost = menuItems.map((item) => {
     const lines = ingredients.filter((i) => i.menu_item_id === item.id);
     const ingredientCost = lines.reduce((s, l) => s + num(l.quantity) * num(l.unit_cost), 0);
@@ -88,8 +113,8 @@ export function computeFinancialSummary() {
     ? forecast.reduce((s, f) => s + (num(f.fixed_costs) + num(f.variable_costs) - num(f.revenue)), 0) / forecast.length
     : monthlyFixedCostsSetting;
 
-  const startingCash = num(getSetting('starting_cash'));
-  const cashBufferTarget = num(getSetting('cash_buffer_target'));
+  const startingCash = num(await getSetting('starting_cash'));
+  const cashBufferTarget = num(await getSetting('cash_buffer_target'));
   const availableCash = startingCash - totalActual;
   const cashRunwayMonths = avgMonthlyBurn > 0 ? Math.round((availableCash / avgMonthlyBurn) * 10) / 10 : null;
 
@@ -116,40 +141,23 @@ export function computeFinancialSummary() {
       belowBuffer: availableCash < cashBufferTarget,
     },
     menuWithCost,
-    sstThreshold: num(getSetting('sst_registration_threshold', 500000)),
+    sstThreshold: num(await getSetting('sst_registration_threshold', 500000)),
   };
 }
 
-function round2(v) {
-  return Math.round(v * 100) / 100;
-}
-
-function today() {
-  const d = new Date();
-  d.setHours(0, 0, 0, 0);
-  return d;
-}
-
-function isOverdue(deadline, status) {
-  if (!deadline || status === 'Complete') return false;
-  const d = new Date(deadline + 'T00:00:00');
-  if (Number.isNaN(d.getTime())) return false;
-  return d.getTime() < today().getTime();
-}
-
-export function computeDashboard() {
-  const tasks = db.prepare('SELECT * FROM tasks').all();
-  const licences = db.prepare('SELECT * FROM licences').all();
-  const menuItems = db.prepare('SELECT * FROM menu_items').all();
-  const ingredients = db.prepare('SELECT * FROM recipe_ingredients').all();
-  const suppliers = db.prepare('SELECT * FROM suppliers').all();
-  const propertyChecklist = db.prepare('SELECT * FROM property_checklist').all();
-  const equipment = db.prepare('SELECT * FROM equipment_register').all();
-  const people = db.prepare('SELECT * FROM people').all();
-  const skillPrep = db.prepare('SELECT * FROM skill_prep').all();
-  const sops = db.prepare('SELECT * FROM sop_library').all();
-  const preOpening = db.prepare('SELECT * FROM pre_opening_checklist').all();
-  const startupCosts = db.prepare('SELECT * FROM startup_costs').all();
+export async function computeDashboard() {
+  const tasks = await all('tasks');
+  const licences = await all('licences');
+  const menuItems = await all('menu_items');
+  const ingredients = await all('recipe_ingredients');
+  const suppliers = await all('suppliers');
+  const propertyChecklist = await all('property_checklist');
+  const equipment = await all('equipment_register');
+  const people = await all('people');
+  const skillPrep = await all('skill_prep');
+  const sops = await all('sop_library');
+  const preOpening = await all('pre_opening_checklist');
+  const startupCosts = await all('startup_costs');
 
   const overdueTasks = tasks.filter((t) => isOverdue(t.deadline, t.status));
   const criticalBlockers = tasks.filter((t) => t.rag === 'Red' && t.status !== 'Complete');
@@ -171,8 +179,8 @@ export function computeDashboard() {
   }
 
   // Financial Model
+  const financial = await computeFinancialSummary();
   {
-    const financial = computeFinancialSummary();
     const total = startupCosts.length;
     const done = startupCosts.filter((c) => c.status === 'Paid').length;
     const p = pct(done, total);
@@ -283,11 +291,10 @@ export function computeDashboard() {
     ? Math.round((sectionList.reduce((s, sec) => s + sec.completionPct, 0) / sectionList.length) * 10) / 10
     : 0;
 
-  const gatesWithStatus = computeGatesWithStatus();
+  const gatesWithStatus = await computeGatesWithStatus();
   const readyToOpen = gatesWithStatus.length > 0 && gatesWithStatus.every((g) => g.green);
 
-  const financial = computeFinancialSummary();
-  const targetOpeningDate = getSetting('target_opening_date');
+  const targetOpeningDate = await getSetting('target_opening_date');
   const daysToOpening = daysBetween(targetOpeningDate);
 
   return {
@@ -307,6 +314,6 @@ export function computeDashboard() {
     overdueTasks: overdueTasks.slice(0, 20),
     gates: gatesWithStatus,
     readyToOpen,
-    businessName: getSetting('business_name'),
+    businessName: await getSetting('business_name'),
   };
 }

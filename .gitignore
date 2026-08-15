@@ -3,8 +3,5 @@ dist/
 build/
 *.log
 .DS_Store
-server/data/*.db
-server/data/*.db-journal
-server/data/*.db-wal
-server/data/*.db-shm
 .env
+.env.local

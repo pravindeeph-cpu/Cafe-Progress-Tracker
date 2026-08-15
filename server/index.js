@@ -3,8 +3,8 @@ import cors from 'cors';
 import path from 'path';
 import fs from 'fs';
 import { fileURLToPath } from 'url';
-import { db } from './db.js';
-import './seed.js';
+import { pool } from './db.js';
+import { seed } from './seed.js';
 import { createCrudRouter } from './crud.js';
 import { computeDashboard, computeFinancialSummary, computeGatesWithStatus } from './dashboard.js';
 
@@ -71,40 +71,59 @@ app.use('/api/gate-items', createCrudRouter('gate_items', [
 ], 'gate_id'));
 
 // ---------- Gates (read: nested with items + computed status) ----------
-app.get('/api/gates', (req, res) => {
-  res.json(computeGatesWithStatus());
+app.get('/api/gates', async (req, res, next) => {
+  try {
+    res.json(await computeGatesWithStatus());
+  } catch (err) {
+    next(err);
+  }
 });
 
 // ---------- Settings ----------
-app.get('/api/settings', (req, res) => {
-  const rows = db.prepare('SELECT * FROM settings').all();
-  const settings = {};
-  for (const r of rows) settings[r.key] = r.value;
-  res.json(settings);
+app.get('/api/settings', async (req, res, next) => {
+  try {
+    const result = await pool.query('SELECT * FROM settings');
+    const settings = {};
+    for (const r of result.rows) settings[r.key] = r.value;
+    res.json(settings);
+  } catch (err) {
+    next(err);
+  }
 });
 
-app.put('/api/settings', (req, res) => {
-  const stmt = db.prepare(
-    `INSERT INTO settings (key, value) VALUES (@key, @value)
-     ON CONFLICT(key) DO UPDATE SET value = @value`
-  );
-  const insertMany = db.transaction((entries) => {
-    for (const [key, value] of entries) stmt.run({ key, value: String(value) });
-  });
-  insertMany(Object.entries(req.body || {}));
-  const rows = db.prepare('SELECT * FROM settings').all();
-  const settings = {};
-  for (const r of rows) settings[r.key] = r.value;
-  res.json(settings);
+app.put('/api/settings', async (req, res, next) => {
+  try {
+    for (const [key, value] of Object.entries(req.body || {})) {
+      await pool.query(
+        `INSERT INTO settings (key, value) VALUES ($1, $2)
+         ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value`,
+        [key, String(value)]
+      );
+    }
+    const result = await pool.query('SELECT * FROM settings');
+    const settings = {};
+    for (const r of result.rows) settings[r.key] = r.value;
+    res.json(settings);
+  } catch (err) {
+    next(err);
+  }
 });
 
 // ---------- Computed endpoints ----------
-app.get('/api/dashboard', (req, res) => {
-  res.json(computeDashboard());
+app.get('/api/dashboard', async (req, res, next) => {
+  try {
+    res.json(await computeDashboard());
+  } catch (err) {
+    next(err);
+  }
 });
 
-app.get('/api/financial/summary', (req, res) => {
-  res.json(computeFinancialSummary());
+app.get('/api/financial/summary', async (req, res, next) => {
+  try {
+    res.json(await computeFinancialSummary());
+  } catch (err) {
+    next(err);
+  }
 });
 
 // ---------- Serve built client in production ----------
@@ -117,7 +136,21 @@ if (fs.existsSync(clientDist)) {
   });
 }
 
-const PORT = process.env.PORT || 4000;
-app.listen(PORT, () => {
-  console.log(`Cafe Launch Control Centre API listening on http://localhost:${PORT}`);
+// ---------- Error handler ----------
+app.use((err, req, res, next) => {
+  console.error(err);
+  res.status(500).json({ error: err.message || 'Internal server error' });
 });
+
+const PORT = process.env.PORT || 4000;
+
+seed()
+  .then(() => {
+    app.listen(PORT, () => {
+      console.log(`Cafe Launch Control Centre API listening on http://localhost:${PORT}`);
+    });
+  })
+  .catch((err) => {
+    console.error('Failed to initialize database:', err);
+    process.exit(1);
+  });
